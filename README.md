@@ -41,11 +41,11 @@ sudo pacman -S ffmpeg
 
 ### Debian/Ubuntu (.deb)
 
-You can install the latest release using the `.deb` package:
+Download the [audiokit-1.0.0+1-linux.deb](dist/1.0.0+1/audiokit-1.0.0+1-linux.deb) directly and install it:
 
 ```bash
 # Install the package
-sudo dpkg -i dist/1.0.0+1/audiokit-1.0.0+1-linux.deb
+sudo dpkg -i audiokit-1.0.0+1-linux.deb
 
 # Fix missing dependencies (if any)
 sudo apt-get install -f
