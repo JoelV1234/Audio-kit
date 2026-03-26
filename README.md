@@ -85,5 +85,5 @@ flutter build linux --release
 
 ## 📜 License
 
-This project is open source. See the LICENSE for details (if any).
+This project is licensed under the [MIT License](LICENSE).
 
