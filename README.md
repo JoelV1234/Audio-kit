@@ -40,7 +40,7 @@ sudo pacman -S ffmpeg
 
 ## Installation
 
-Download the latest `.deb` from the [Releases](../../releases) page and install:
+Download the latest `.deb` from the [Releases](../../releases) page, click on Assets dropdown to find the .deb file:
 
 ```bash
 sudo dpkg -i audiokit-1.0.0+1-linux.deb
