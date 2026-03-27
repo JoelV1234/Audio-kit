@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:audiokit/services/log_service.dart';
+
 /// Supported output audio formats.
 enum AudioFormat { opus, mp3, heAac }
 
@@ -56,101 +58,102 @@ class FfmpegService {
   }) async {
     final args = [
       '-y', // overwrite
+      '-nostdin', // prevent FFMPEG from waiting for interactive input
+      '-progress', 'pipe:1', // write machine-readable progress to stdout
       '-i', inputPath,
       '-vn', // strip video
       ..._codecArgs(format),
       outputPath,
     ];
 
+    final logService = LogService();
+    logService.clear();
+    logService.addLog('Running: ffmpeg ${args.join(' ')}');
+
     final process = await Process.start('ffmpeg', args);
     if (onProcessStarted != null) onProcessStarted(process);
 
-    final stdoutBuffer = StringBuffer();
     final stderrBuffer = StringBuffer();
-
     Duration? totalDuration;
 
-    process.stdout.transform(utf8.decoder).listen((data) {
-      stdoutBuffer.write(data);
-    });
+    // Collect stderr for duration parsing and error messages.
+    // Use a raw string buffer to handle \r-delimited FFmpeg output.
+    String stderrPartial = '';
+    process.stderr.transform(utf8.decoder).listen((data) {
+      stderrBuffer.write(data);
+      logService.addLog(data);
 
-    final stderrCompleter = process.stderr
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-          stderrBuffer.writeln(line);
+      // Split on both \r and \n to handle FFmpeg's progress output.
+      stderrPartial += data;
+      final lines = stderrPartial.split(RegExp(r'[\r\n]+'));
+      // Keep the last element as partial (may be incomplete).
+      stderrPartial = lines.removeLast();
 
-          // Parse Duration: 00:00:00.00
-          if (totalDuration == null && line.contains('Duration:')) {
-            final match = RegExp(
-              r'Duration:\s+(\d+):(\d+):(\d+\.\d+)',
-            ).firstMatch(line);
-            if (match != null) {
-              final hours = int.parse(match.group(1)!);
-              final mins = int.parse(match.group(2)!);
-              final secs = double.parse(match.group(3)!);
-              totalDuration = Duration(
-                milliseconds:
-                    (hours * 3600000 + mins * 60000 + secs * 1000).toInt(),
-              );
-            }
+      for (final line in lines) {
+        if (line.trim().isEmpty) continue;
+
+        // Parse Duration: 00:00:00.00
+        if (totalDuration == null && line.contains('Duration:')) {
+          final match = RegExp(
+            r'Duration:\s+(\d+):(\d+):(\d+\.\d+)',
+          ).firstMatch(line);
+          if (match != null) {
+            final hours = int.parse(match.group(1)!);
+            final mins = int.parse(match.group(2)!);
+            final secs = double.parse(match.group(3)!);
+            totalDuration = Duration(
+              milliseconds:
+                  (hours * 3600000 + mins * 60000 + secs * 1000).toInt(),
+            );
           }
+        }
 
-          // Parse time=00:00:00.00 and speed=1.5x
-          if (totalDuration != null &&
-              totalDuration!.inMilliseconds > 0 &&
-              onProgress != null) {
-            final match = RegExp(
-              r'time=(\d+):(\d+):(\d+\.\d+)',
-            ).firstMatch(line);
-            if (match != null) {
-              final hours = int.parse(match.group(1)!);
-              final mins = int.parse(match.group(2)!);
-              final secs = double.parse(match.group(3)!);
-              final currentMs =
-                  (hours * 3600000 + mins * 60000 + secs * 1000).toInt();
+        // Parse time=00:00:00.00 and speed=1.5x
+        if (totalDuration != null &&
+            totalDuration!.inMilliseconds > 0 &&
+            onProgress != null) {
+          final match = RegExp(r'time=(\d+):(\d+):(\d+\.\d+)').firstMatch(line);
+          if (match != null) {
+            final hours = int.parse(match.group(1)!);
+            final mins = int.parse(match.group(2)!);
+            final secs = double.parse(match.group(3)!);
+            final currentMs =
+                (hours * 3600000 + mins * 60000 + secs * 1000).toInt();
 
-              double progress = currentMs / totalDuration!.inMilliseconds;
-              if (progress > 1.0) progress = 1.0;
-              if (progress < 0.0) progress = 0.0;
+            double progress = currentMs / totalDuration!.inMilliseconds;
+            if (progress > 1.0) progress = 1.0;
+            if (progress < 0.0) progress = 0.0;
 
-              String eta = '';
-              final speedMatch = RegExp(
-                r'speed=\s*([\d\.]+)x',
-              ).firstMatch(line);
-              if (speedMatch != null && progress > 0.0 && progress < 1.0) {
-                final speed = double.tryParse(speedMatch.group(1)!) ?? 0.0;
-                if (speed > 0) {
-                  final remainingRealMs =
-                      (totalDuration!.inMilliseconds - currentMs) / speed;
-                  final remainingSecs = (remainingRealMs / 1000).round();
-                  if (remainingSecs < 60) {
-                    eta = '${remainingSecs}s';
-                  } else {
-                    final m = remainingSecs ~/ 60;
-                    final s = remainingSecs % 60;
-                    eta = '${m}m ${s}s';
-                  }
+            String eta = '';
+            final speedMatch = RegExp(r'speed=\s*([\d\.]+)x').firstMatch(line);
+            if (speedMatch != null && progress > 0.0 && progress < 1.0) {
+              final speed = double.tryParse(speedMatch.group(1)!) ?? 0.0;
+              if (speed > 0) {
+                final remainingRealMs =
+                    (totalDuration!.inMilliseconds - currentMs) / speed;
+                final remainingSecs = (remainingRealMs / 1000).round();
+                if (remainingSecs < 60) {
+                  eta = '${remainingSecs}s';
+                } else {
+                  final m = remainingSecs ~/ 60;
+                  final s = remainingSecs % 60;
+                  eta = '${m}m ${s}s';
                 }
               }
-              onProgress(progress, eta);
             }
+            onProgress(progress, eta);
           }
-        });
+        }
+      }
+    });
 
     final exitCode = await process.exitCode;
-    await stderrCompleter.asFuture();
 
     if (onProgress != null && exitCode == 0) {
       onProgress(1.0, '');
     }
 
-    return ProcessResult(
-      process.pid,
-      exitCode,
-      stdoutBuffer.toString(),
-      stderrBuffer.toString(),
-    );
+    return ProcessResult(process.pid, exitCode, '', stderrBuffer.toString());
   }
 
   /// Merges multiple audio files into one output file.
@@ -163,6 +166,9 @@ class FfmpegService {
     void Function(Process)? onProcessStarted,
     void Function(double, String)? onProgress,
   }) async {
+    final logService = LogService();
+    logService.clear();
+
     // Create a temporary concat list file.
     final tempDir = await Directory.systemTemp.createTemp('audiokit_');
     final concatFile = File('${tempDir.path}/concat.txt');
@@ -171,10 +177,14 @@ class FfmpegService {
     // different source formats, then concat the wav files, then encode to the
     // target format.
     final wavFiles = <String>[];
+    double totalSourceDurationMs = 0;
+
     for (var i = 0; i < inputPaths.length; i++) {
       final wavPath = '${tempDir.path}/part_$i.wav';
+      logService.addLog('Converting part $i (${inputPaths[i]}) to WAV...');
       final process = await Process.start('ffmpeg', [
         '-y',
+        '-nostdin',
         '-i',
         inputPaths[i],
         '-ar',
@@ -187,6 +197,35 @@ class FfmpegService {
       ]);
 
       if (onProcessStarted != null) onProcessStarted(process);
+
+      process.stdout.transform(utf8.decoder).listen((data) {
+        logService.addLog(data);
+      });
+
+      String wavStderrPartial = '';
+      process.stderr.transform(utf8.decoder).listen((data) {
+        logService.addLog(data);
+        // Split on both \r and \n to handle FFmpeg's output.
+        wavStderrPartial += data;
+        final lines = wavStderrPartial.split(RegExp(r'[\r\n]+'));
+        wavStderrPartial = lines.removeLast();
+        for (final line in lines) {
+          if (line.trim().isEmpty) continue;
+          // Parse Duration: 00:00:00.00 to sum it up.
+          if (line.contains('Duration:')) {
+            final match = RegExp(
+              r'Duration:\s+(\d+):(\d+):(\d+\.\d+)',
+            ).firstMatch(line);
+            if (match != null) {
+              final hours = int.parse(match.group(1)!);
+              final mins = int.parse(match.group(2)!);
+              final secs = double.parse(match.group(3)!);
+              final ms = (hours * 3600000 + mins * 60000 + secs * 1000).toInt();
+              totalSourceDurationMs += ms;
+            }
+          }
+        }
+      });
 
       final exitCode = await process.exitCode;
       if (exitCode != 0) {
@@ -203,7 +242,7 @@ class FfmpegService {
       }
       wavFiles.add(wavPath);
       if (onProgress != null) {
-        onProgress(((i + 1) / inputPaths.length) * 0.4, '');
+        onProgress(((i + 1) / inputPaths.length) * 0.4, 'Analyzing...');
       }
     }
 
@@ -216,6 +255,7 @@ class FfmpegService {
     // Run ffmpeg concat.
     final args = [
       '-y',
+      '-nostdin',
       '-f',
       'concat',
       '-safe',
@@ -226,95 +266,96 @@ class FfmpegService {
       outputPath,
     ];
 
+    logService.addLog('Running: ffmpeg ${args.join(' ')}');
     final process = await Process.start('ffmpeg', args);
     if (onProcessStarted != null) onProcessStarted(process);
-    final stdoutBuffer = StringBuffer();
     final stderrBuffer = StringBuffer();
     Duration? totalDuration;
 
-    process.stdout
-        .transform(utf8.decoder)
-        .listen((data) => stdoutBuffer.write(data));
+    // Use a raw string buffer to handle \r-delimited FFmpeg output.
+    String stderrPartial = '';
+    process.stderr.transform(utf8.decoder).listen((data) {
+      stderrBuffer.write(data);
+      logService.addLog(data);
 
-    final stderrCompleter = process.stderr
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-          stderrBuffer.writeln(line);
-          // Parse duration
-          if (totalDuration == null && line.contains('Duration:')) {
-            final match = RegExp(
-              r'Duration:\s+(\d+):(\d+):(\d+\.\d+)',
-            ).firstMatch(line);
-            if (match != null) {
-              final hours = int.parse(match.group(1)!);
-              final mins = int.parse(match.group(2)!);
-              final secs = double.parse(match.group(3)!);
-              totalDuration = Duration(
-                milliseconds:
-                    (hours * 3600000 + mins * 60000 + secs * 1000).toInt(),
-              );
-            }
+      // Split on both \r and \n to handle FFmpeg's progress output.
+      stderrPartial += data;
+      final lines = stderrPartial.split(RegExp(r'[\r\n]+'));
+      stderrPartial = lines.removeLast();
+
+      for (final line in lines) {
+        if (line.trim().isEmpty) continue;
+
+        // Parse duration
+        if (totalDuration == null && line.contains('Duration:')) {
+          final match = RegExp(
+            r'Duration:\s+(\d+):(\d+):(\d+\.\d+)',
+          ).firstMatch(line);
+          if (match != null) {
+            final hours = int.parse(match.group(1)!);
+            final mins = int.parse(match.group(2)!);
+            final secs = double.parse(match.group(3)!);
+            totalDuration = Duration(
+              milliseconds:
+                  (hours * 3600000 + mins * 60000 + secs * 1000).toInt(),
+            );
           }
+        }
 
-          // Parse time and speed
-          if (totalDuration != null &&
-              totalDuration!.inMilliseconds > 0 &&
-              onProgress != null) {
-            final match = RegExp(
-              r'time=(\d+):(\d+):(\d+\.\d+)',
-            ).firstMatch(line);
-            if (match != null) {
-              final hours = int.parse(match.group(1)!);
-              final mins = int.parse(match.group(2)!);
-              final secs = double.parse(match.group(3)!);
-              final currentMs =
-                  (hours * 3600000 + mins * 60000 + secs * 1000).toInt();
+        // Parse time and speed
+        if ((totalDuration != null || totalSourceDurationMs > 0) &&
+            onProgress != null) {
+          final match = RegExp(r'time=(\d+):(\d+):(\d+\.\d+)').firstMatch(line);
+          if (match != null) {
+            final hours = int.parse(match.group(1)!);
+            final mins = int.parse(match.group(2)!);
+            final secs = double.parse(match.group(3)!);
+            final currentMs =
+                (hours * 3600000 + mins * 60000 + secs * 1000).toInt();
 
-              double progress =
-                  0.4 + (currentMs / totalDuration!.inMilliseconds) * 0.6;
-              if (progress > 1.0) progress = 1.0;
-              if (progress < 0.4) progress = 0.4;
+            // Use calculated total if FFmpeg didn't provide one for concat.
+            final targetDuration =
+                totalDuration?.inMilliseconds ??
+                (totalSourceDurationMs > 0 ? totalSourceDurationMs : 0);
 
-              String eta = '';
-              final speedMatch = RegExp(
-                r'speed=\s*([\d\.]+)x',
-              ).firstMatch(line);
-              if (speedMatch != null && progress > 0.4 && progress < 1.0) {
-                final speed = double.tryParse(speedMatch.group(1)!) ?? 0.0;
-                if (speed > 0) {
-                  final remainingRealMs =
-                      (totalDuration!.inMilliseconds - currentMs) / speed;
-                  final remainingSecs = (remainingRealMs / 1000).round();
-                  if (remainingSecs < 60) {
-                    eta = '${remainingSecs}s';
-                  } else {
-                    final m = remainingSecs ~/ 60;
-                    final s = remainingSecs % 60;
-                    eta = '${m}m ${s}s';
-                  }
+            double progress = 0.4;
+            if (targetDuration > 0) {
+              progress = 0.4 + (currentMs / targetDuration) * 0.6;
+            }
+            if (progress > 1.0) progress = 1.0;
+            if (progress < 0.4) progress = 0.4;
+
+            String eta = '';
+            final speedMatch = RegExp(r'speed=\s*([\d\.]+)x').firstMatch(line);
+            if (speedMatch != null && progress > 0.4 && progress < 1.0) {
+              final speed = double.tryParse(speedMatch.group(1)!) ?? 0.0;
+              if (speed > 0) {
+                final remainingRealMs = (targetDuration - currentMs) / speed;
+                final remainingSecs = (remainingRealMs / 1000).round();
+                if (remainingSecs < 60) {
+                  eta = '${remainingSecs}s';
+                } else {
+                  final m = remainingSecs ~/ 60;
+                  final s = remainingSecs % 60;
+                  eta = '${m}m ${s}s';
                 }
               }
-
-              onProgress(progress, eta);
             }
+
+            onProgress(progress, eta);
           }
-        });
+        }
+      }
+    });
 
     final exitCode = await process.exitCode;
-    await stderrCompleter.asFuture();
     // Clean up.
     await tempDir.delete(recursive: true);
 
     if (onProgress != null && exitCode == 0) {
       onProgress(1.0, '');
     }
-    return ProcessResult(
-      process.pid,
-      exitCode,
-      stdoutBuffer.toString(),
-      stderrBuffer.toString(),
-    );
+    return ProcessResult(process.pid, exitCode, '', stderrBuffer.toString());
   }
 
   /// Checks that ffmpeg is available on the system.

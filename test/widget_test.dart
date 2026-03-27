@@ -7,8 +7,9 @@ void main() {
   testWidgets('AudioKit app renders', (WidgetTester tester) async {
     await tester.pumpWidget(const AudioKitApp());
 
-    // Verify the tabs are present.
-    expect(find.text('Video to Audio'), findsWidgets);
-    expect(find.text('Audio Merger'), findsWidgets);
+    // Verify the app title and tabs are present.
+    expect(find.text('AudioKit'), findsOneWidget);
+    expect(find.text('Video to Audio'), findsOneWidget);
+    expect(find.text('Audio Merger'), findsOneWidget);
   });
 }

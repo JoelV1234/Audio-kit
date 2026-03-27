@@ -7,8 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/media_file.dart';
 import '../services/ffmpeg_service.dart';
-
-import 'video_to_audio/file_list_tile.dart';
+import '../services/notification_service.dart';
 
 /// Tab for converting video files (mp4) to audio (Opus, MP3, HE-AAC).
 class VideoToAudioTab extends StatefulWidget {
@@ -32,7 +31,7 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
   int _filesCompletedSoFar = 0;
 
   // Tracking active processes for cancellation
-  final Map<int, Process> _activeProcesses = {};
+  final Map<String, Process> _activeProcesses = {};
   bool _cancelRequested = false;
 
   @override
@@ -270,7 +269,12 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
 
   void _clearFiles() {
     setState(() {
-      _files.clear();
+      if (_isConverting) {
+        // Only clear non-processing files
+        _files.removeWhere((f) => f.status != MediaFileStatus.processing);
+      } else {
+        _files.clear();
+      }
     });
     _notifyParent();
   }
@@ -296,12 +300,13 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
   }
 
   Future<void> _cancelConversion(int index) async {
-    final process = _activeProcesses[index];
+    final file = _files[index];
+    final process = _activeProcesses[file.path];
     if (process == null) return;
 
-    // Kill the process first so the _convertSingle completer resolves.
-    process.kill();
-    _activeProcesses.remove(index);
+    // Kill the process with SIGKILL to force immediate termination.
+    process.kill(ProcessSignal.sigkill);
+    _activeProcesses.remove(file.path);
 
     if (mounted) {
       setState(() {
@@ -342,13 +347,16 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
       if (mounted) {
         setState(() {
           for (final entry in _activeProcesses.entries) {
-            final index = entry.key;
-            _files[index] = _files[index].copyWith(
-              status: MediaFileStatus.pending,
-              progress: 0.0,
-              errorMessage: null,
-            );
-            entry.value.kill();
+            final path = entry.key;
+            final idx = _files.indexWhere((f) => f.path == path);
+            if (idx != -1) {
+              _files[idx] = _files[idx].copyWith(
+                status: MediaFileStatus.pending,
+                progress: 0.0,
+                errorMessage: null,
+              );
+            }
+            entry.value.kill(ProcessSignal.sigkill);
           }
           _activeProcesses.clear();
           _isConverting = false;
@@ -378,57 +386,135 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
     final baseName = p.basenameWithoutExtension(file.path);
     final ext = extensionForFormat(_selectedFormat);
     final outputPath = p.join(outputDir, '$baseName$ext');
+    final tempPath = p.join(outputDir, '$baseName.part$ext');
+    final filePath = file.path;
 
-    final result = await FfmpegService.convertVideoToAudio(
-      inputPath: file.path,
-      outputPath: outputPath,
-      format: _selectedFormat,
-      onProcessStarted: (process) {
-        if (!mounted) return;
-        setState(() => _activeProcesses[index] = process);
-      },
-      onProgress: (progress, eta) {
-        if (!mounted) return;
+    try {
+      final result = await FfmpegService.convertVideoToAudio(
+        inputPath: file.path,
+        outputPath: tempPath,
+        format: _selectedFormat,
+        onProcessStarted: (process) {
+          if (!mounted) return;
+          setState(() => _activeProcesses[filePath] = process);
+        },
+        onProgress: (progress, eta) {
+          if (!mounted) return;
+          setState(() {
+            final idx = _files.indexWhere((f) => f.path == filePath);
+            if (idx != -1) {
+              _files[idx] = _files[idx].copyWith(progress: progress, eta: eta);
+            }
+          });
+          _notifyParent();
+        },
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _activeProcesses.remove(filePath);
+        final idx = _files.indexWhere((f) => f.path == filePath);
+        if (idx != -1 && _files[idx].status == MediaFileStatus.processing) {
+          if (result.exitCode == 0) {
+            // Rename temp file to final output.
+            try {
+              File(tempPath).renameSync(outputPath);
+            } catch (_) {}
+            _files[idx] = _files[idx].copyWith(
+              status: MediaFileStatus.done,
+              progress: 1.0,
+            );
+            NotificationService.conversionComplete(
+              fileName: _files[idx].name,
+              success: true,
+              outputPath: outputPath,
+            );
+          } else {
+            // Clean up partial file.
+            try {
+              File(tempPath).deleteSync();
+            } catch (_) {}
+            _files[idx] = _files[idx].copyWith(
+              status: MediaFileStatus.error,
+              errorMessage: result.stderr.toString(),
+            );
+            NotificationService.conversionComplete(
+              fileName: _files[idx].name,
+              success: false,
+            );
+            // Show error dialog.
+            if (mounted) {
+              showDialog(
+                context: context,
+                builder:
+                    (ctx) => AlertDialog(
+                      icon: const Icon(
+                        Icons.error,
+                        color: Colors.red,
+                        size: 36,
+                      ),
+                      title: const Text('Conversion Failed'),
+                      content: SizedBox(
+                        width: 500,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'File: ${_files[idx].name}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Flexible(
+                              child: SingleChildScrollView(
+                                child: SelectableText(
+                                  result.stderr.toString(),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+              );
+            }
+          }
+        }
+      });
+    } finally {
+      // Clean up temp file if it still exists (e.g. on cancel).
+      try {
+        if (File(tempPath).existsSync()) File(tempPath).deleteSync();
+      } catch (_) {}
+      if (mounted) {
         setState(() {
-          _files[index] = _files[index].copyWith(progress: progress, eta: eta);
+          _activeProcesses.remove(filePath);
+          _isConverting = _activeProcesses.isNotEmpty;
         });
         _notifyParent();
-      },
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      _activeProcesses.remove(index);
-      if (_files[index].status == MediaFileStatus.processing) {
-        if (result.exitCode == 0) {
-          _files[index] = file.copyWith(
-            status: MediaFileStatus.done,
-            progress: 1.0,
-          );
-        } else {
-          _files[index] = file.copyWith(
-            status: MediaFileStatus.error,
-            errorMessage: result.stderr.toString(),
-          );
-        }
       }
-      _isConverting = _files.any((f) => f.status == MediaFileStatus.processing);
-    });
-    _notifyParent();
+    }
   }
 
   /// Convert all pending files.
   Future<void> _convertAll() async {
-    if (_files.isEmpty) return;
+    if (_files.isEmpty || _isConverting) return;
 
-    final pendingIndices = <int>[];
-    for (var i = 0; i < _files.length; i++) {
-      if (_files[i].status == MediaFileStatus.pending) {
-        pendingIndices.add(i);
-      }
-    }
-    if (pendingIndices.isEmpty) return;
+    final hasPending = _files.any((f) => f.status == MediaFileStatus.pending);
+    if (!hasPending) return;
 
     final outputDir = await _pickOutputDir();
     if (outputDir == null) return;
@@ -441,70 +527,156 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
     });
     _notifyParent();
 
-    for (final i in pendingIndices) {
-      if (_cancelRequested) break;
+    try {
+      while (true) {
+        if (!mounted || _cancelRequested) break;
 
-      final file = _files[i];
+        final i = _files.indexWhere((f) => f.status == MediaFileStatus.pending);
+        if (i == -1) break;
 
-      setState(() {
-        _files[i] = file.copyWith(
-          status: MediaFileStatus.processing,
-          progress: 0.0,
+        final file = _files[i];
+
+        setState(() {
+          _files[i] = file.copyWith(
+            status: MediaFileStatus.processing,
+            progress: 0.0,
+          );
+        });
+        _notifyParent();
+
+        final baseName = p.basenameWithoutExtension(file.path);
+        final ext = extensionForFormat(_selectedFormat);
+        final outputPath = p.join(outputDir, '$baseName$ext');
+        final tempPath = p.join(outputDir, '$baseName.part$ext');
+
+        final filePath = file.path;
+
+        final result = await FfmpegService.convertVideoToAudio(
+          inputPath: file.path,
+          outputPath: tempPath,
+          format: _selectedFormat,
+          onProcessStarted: (process) {
+            if (!mounted) return;
+            setState(() => _activeProcesses[filePath] = process);
+          },
+          onProgress: (progress, eta) {
+            if (!mounted) return;
+            setState(() {
+              final idx = _files.indexWhere((f) => f.path == filePath);
+              if (idx != -1) {
+                _files[idx] = _files[idx].copyWith(
+                  progress: progress,
+                  eta: eta,
+                );
+              }
+            });
+            _notifyParent();
+          },
         );
-      });
-      _notifyParent();
 
-      final baseName = p.basenameWithoutExtension(file.path);
-      final ext = extensionForFormat(_selectedFormat);
-      final outputPath = p.join(outputDir, '$baseName$ext');
-
-      final result = await FfmpegService.convertVideoToAudio(
-        inputPath: file.path,
-        outputPath: outputPath,
-        format: _selectedFormat,
-        onProcessStarted: (process) {
-          if (!mounted) return;
-          setState(() => _activeProcesses[i] = process);
-        },
-        onProgress: (progress, eta) {
-          if (!mounted) return;
-          setState(() {
-            _files[i] = _files[i].copyWith(progress: progress, eta: eta);
-          });
-          _notifyParent();
-        },
-      );
-
-      if (!mounted) return;
-      if (_cancelRequested) break;
-
-      _filesCompletedSoFar++;
-
-      setState(() {
-        _activeProcesses.remove(i);
-        if (_files[i].status == MediaFileStatus.processing) {
-          if (result.exitCode == 0) {
-            _files[i] = file.copyWith(
-              status: MediaFileStatus.done,
-              progress: 1.0,
-            );
-          } else {
-            _files[i] = file.copyWith(
-              status: MediaFileStatus.error,
-              errorMessage: result.stderr.toString(),
-            );
-          }
+        if (!mounted) return;
+        if (_cancelRequested) {
+          // Clean up temp file on cancel.
+          try {
+            File(tempPath).deleteSync();
+          } catch (_) {}
+          break;
         }
-      });
-      _notifyParent();
+
+        _filesCompletedSoFar++;
+
+        setState(() {
+          _activeProcesses.remove(filePath);
+          final idx = _files.indexWhere((f) => f.path == filePath);
+          if (idx != -1 && _files[idx].status == MediaFileStatus.processing) {
+            if (result.exitCode == 0) {
+              // Rename temp file to final output.
+              try {
+                File(tempPath).renameSync(outputPath);
+              } catch (_) {}
+              _files[idx] = _files[idx].copyWith(
+                status: MediaFileStatus.done,
+                progress: 1.0,
+              );
+              NotificationService.conversionComplete(
+                fileName: _files[idx].name,
+                success: true,
+                outputPath: outputPath,
+              );
+            } else {
+              // Clean up partial file.
+              try {
+                File(tempPath).deleteSync();
+              } catch (_) {}
+              _files[idx] = _files[idx].copyWith(
+                status: MediaFileStatus.error,
+                errorMessage: result.stderr.toString(),
+              );
+              NotificationService.conversionComplete(
+                fileName: _files[idx].name,
+                success: false,
+              );
+              // Show error dialog.
+              if (mounted) {
+                showDialog(
+                  context: context,
+                  builder:
+                      (ctx) => AlertDialog(
+                        icon: const Icon(
+                          Icons.error,
+                          color: Colors.red,
+                          size: 36,
+                        ),
+                        title: const Text('Conversion Failed'),
+                        content: SizedBox(
+                          width: 500,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'File: ${_files[idx].name}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Flexible(
+                                child: SingleChildScrollView(
+                                  child: SelectableText(
+                                    result.stderr.toString(),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            child: const Text('OK'),
+                          ),
+                        ],
+                      ),
+                );
+              }
+            }
+          }
+        });
+        _notifyParent();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isConverting = false);
+        _notifyParent();
+      }
     }
 
-    if (mounted) {
-      setState(() => _isConverting = false);
-      _notifyParent();
-    }
-
-    if (mounted) {
+    if (mounted && !_cancelRequested) {
       final doneCount =
           _files.where((f) => f.status == MediaFileStatus.done).length;
       final errorCount =
@@ -514,6 +686,18 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
           content: Text(
             'Conversion complete: $doneCount done, $errorCount errors',
           ),
+          action: SnackBarAction(
+            label: 'Show in Folder',
+            onPressed: () {
+              // Open the output directory of the last converted file.
+              final lastDone = _files.lastWhere(
+                (f) => f.status == MediaFileStatus.done,
+                orElse: () => _files.first,
+              );
+              NotificationService.revealInFileManager(lastDone.path);
+            },
+          ),
+          duration: const Duration(seconds: 6),
         ),
       );
     }
@@ -583,7 +767,7 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
               Row(
                 children: [
                   ElevatedButton.icon(
-                    onPressed: _isConverting ? null : _pickFiles,
+                    onPressed: _pickFiles,
                     icon: const Icon(Icons.add),
                     label: const Text('Add Files'),
                   ),
@@ -605,10 +789,9 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton.icon(
-                    onPressed:
-                        (_isConverting || _files.isEmpty) ? null : _clearFiles,
+                    onPressed: _files.isEmpty ? null : _clearFiles,
                     icon: const Icon(Icons.clear_all),
-                    label: const Text('Clear'),
+                    label: const Text('Clear All'),
                   ),
                 ],
               ),
@@ -645,18 +828,22 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
                           itemCount: _files.length,
                           itemBuilder: (context, index) {
                             final file = _files[index];
-                            return FileListTile(
+                            return _FileListTile(
                               file: file,
-                              onRetry:
-                                  (file.status == MediaFileStatus.error &&
-                                          !_isConverting)
+                              onConvert:
+                                  file.status == MediaFileStatus.pending
                                       ? () => _convertSingle(index)
-                                      : () {},
+                                      : null,
                               onCancel:
                                   file.status == MediaFileStatus.processing
                                       ? () => _cancelConversion(index)
-                                      : () {},
-                              onRemove: () => _removeFile(index),
+                                      : null,
+                              onRemove:
+                                  _isConverting &&
+                                          file.status ==
+                                              MediaFileStatus.processing
+                                      ? null
+                                      : () => _removeFile(index),
                             );
                           },
                         ),
@@ -666,5 +853,258 @@ class VideoToAudioTabState extends State<VideoToAudioTab>
         ),
       ),
     );
+  }
+}
+
+/// Individual file tile with a progress bar and percentage beneath it.
+/// Shows a shimmer/skeleton effect when the file is processing.
+class _FileListTile extends StatefulWidget {
+  final MediaFile file;
+  final VoidCallback? onConvert;
+  final VoidCallback? onRemove;
+  final VoidCallback? onCancel;
+
+  const _FileListTile({
+    required this.file,
+    this.onConvert,
+    this.onRemove,
+    this.onCancel,
+  });
+
+  @override
+  State<_FileListTile> createState() => _FileListTileState();
+}
+
+class _FileListTileState extends State<_FileListTile>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _shimmerController;
+
+  @override
+  void initState() {
+    super.initState();
+    _shimmerController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _shimmerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final file = widget.file;
+    final isProcessing = file.status == MediaFileStatus.processing;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Column(
+        children: [
+          Stack(
+            children: [
+              // Shimmer overlay when processing.
+              if (isProcessing)
+                Positioned.fill(
+                  child: AnimatedBuilder(
+                    animation: _shimmerController,
+                    builder: (context, child) {
+                      return Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          gradient: LinearGradient(
+                            begin: Alignment(
+                              -1.0 + 2.0 * _shimmerController.value,
+                              0,
+                            ),
+                            end: Alignment(
+                              -0.5 + 2.0 * _shimmerController.value,
+                              0,
+                            ),
+                            colors: [
+                              Colors.transparent,
+                              theme.colorScheme.primary.withOpacity(0.06),
+                              Colors.transparent,
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ListTile(
+                enabled: !isProcessing,
+                leading: _statusIcon(file.status),
+                title: Text(file.name, overflow: TextOverflow.ellipsis),
+                subtitle:
+                    file.status == MediaFileStatus.error
+                        ? Text(
+                          file.errorMessage ?? 'Unknown error',
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontSize: 12,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        )
+                        : Text(
+                          file.path,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Percentage and ETA label.
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _percentageLabel(),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: _progressColor(),
+                          ),
+                        ),
+                        if (isProcessing &&
+                            file.eta != null &&
+                            file.eta!.isNotEmpty)
+                          Text(
+                            file.eta!,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: _progressColor(),
+                              fontSize: 10,
+                            ),
+                          ),
+                      ],
+                    ),
+                    // Per-file convert button.
+                    if (widget.onConvert != null) ...[
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: widget.onConvert,
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(0, 32),
+                        ),
+                        child: const Text('Convert'),
+                      ),
+                    ],
+                    if (widget.onCancel != null) ...[
+                      const SizedBox(width: 8),
+                      FilledButton.tonal(
+                        onPressed: widget.onCancel,
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(0, 32),
+                          backgroundColor: Colors.red.withOpacity(0.1),
+                          foregroundColor: Colors.red,
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                    ],
+                    if (widget.onRemove != null) ...[
+                      const SizedBox(width: 4),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: widget.onRemove,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          // Progress bar below each file.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child:
+                  isProcessing
+                      ? LinearProgressIndicator(
+                        value: file.progress > 0 ? file.progress : null,
+                        minHeight: 4,
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                        color: Colors.blue,
+                      )
+                      : LinearProgressIndicator(
+                        value: _progressValue(),
+                        minHeight: 4,
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                        color: _progressColor(),
+                      ),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  String _percentageLabel() {
+    switch (widget.file.status) {
+      case MediaFileStatus.pending:
+        return '0%';
+      case MediaFileStatus.processing:
+        return widget.file.progress > 0
+            ? '${(widget.file.progress * 100).toStringAsFixed(1)}%'
+            : '...';
+      case MediaFileStatus.done:
+        return '100%';
+      case MediaFileStatus.error:
+        return 'Error';
+    }
+  }
+
+  double _progressValue() {
+    switch (widget.file.status) {
+      case MediaFileStatus.pending:
+        return 0.0;
+      case MediaFileStatus.processing:
+        return widget.file.progress;
+      case MediaFileStatus.done:
+        return 1.0;
+      case MediaFileStatus.error:
+        return 1.0;
+    }
+  }
+
+  Color _progressColor() {
+    switch (widget.file.status) {
+      case MediaFileStatus.pending:
+        return Colors.grey.shade400;
+      case MediaFileStatus.processing:
+        return Colors.blue;
+      case MediaFileStatus.done:
+        return Colors.green;
+      case MediaFileStatus.error:
+        return Colors.red;
+    }
+  }
+
+  Widget _statusIcon(MediaFileStatus status) {
+    switch (status) {
+      case MediaFileStatus.pending:
+        return const Icon(Icons.hourglass_empty, color: Colors.grey);
+      case MediaFileStatus.processing:
+        return const Icon(Icons.sync, color: Colors.blue);
+      case MediaFileStatus.done:
+        return const Icon(Icons.check_circle, color: Colors.green);
+      case MediaFileStatus.error:
+        return const Icon(Icons.error, color: Colors.red);
+    }
   }
 }

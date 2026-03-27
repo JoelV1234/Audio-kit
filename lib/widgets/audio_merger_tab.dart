@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/media_file.dart';
 import '../services/ffmpeg_service.dart';
+import '../services/notification_service.dart';
 
 /// Tab for merging multiple audio files into one.
 class AudioMergerTab extends StatefulWidget {
@@ -225,7 +226,7 @@ class AudioMergerTabState extends State<AudioMergerTab>
 
     setState(() {
       _cancelRequested = true;
-      _activeProcess?.kill();
+      _activeProcess?.kill(ProcessSignal.sigkill);
       _isMerging = false;
       _mergeProgress = 0.0;
       _mergeEta = '';
@@ -307,6 +308,11 @@ class AudioMergerTabState extends State<AudioMergerTab>
     }
     _outputPath = finalPath;
 
+    // Build temp path: "merged.part.mp3" so FFmpeg knows the format.
+    final baseName = p.basenameWithoutExtension(finalPath);
+    final dir = p.dirname(finalPath);
+    final tempPath = p.join(dir, '$baseName.part$ext');
+
     setState(() {
       _isMerging = true;
       _mergeProgress = 0.0;
@@ -315,49 +321,103 @@ class AudioMergerTabState extends State<AudioMergerTab>
     });
     _notifyParent();
 
-    final result = await FfmpegService.mergeAudioFiles(
-      inputPaths: _files.map((f) => f.path).toList(),
-      outputPath: finalPath,
-      format: _selectedFormat,
-      onProcessStarted: (process) {
-        if (!mounted) return;
-        setState(() => _activeProcess = process);
-      },
-      onProgress: (progress, eta) {
-        if (!mounted) return;
-        setState(() {
-          _mergeProgress = progress;
-          _mergeEta = eta;
-        });
-      },
-    );
+    try {
+      final result = await FfmpegService.mergeAudioFiles(
+        inputPaths: _files.map((f) => f.path).toList(),
+        outputPath: tempPath,
+        format: _selectedFormat,
+        onProcessStarted: (process) {
+          if (!mounted) return;
+          setState(() => _activeProcess = process);
+        },
+        onProgress: (progress, eta) {
+          if (!mounted) return;
+          setState(() {
+            _mergeProgress = progress;
+            _mergeEta = eta;
+          });
+        },
+      );
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    setState(() {
-      _isMerging = false;
-      _activeProcess = null;
-      if (result.exitCode == 0) {
-        _mergeProgress = 1.0;
+      setState(() {
+        if (result.exitCode == 0) {
+          // Rename temp file to final output.
+          try {
+            File(tempPath).renameSync(finalPath);
+          } catch (_) {}
+          _mergeProgress = 1.0;
+        }
+        _lastMergeSucceeded = result.exitCode == 0;
+      });
+
+      if (mounted && !_cancelRequested) {
+        if (result.exitCode == 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Merged successfully: ${p.basename(finalPath)}'),
+              action: SnackBarAction(
+                label: 'Show in Folder',
+                onPressed:
+                    () => NotificationService.revealInFileManager(finalPath),
+              ),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+          NotificationService.mergeComplete(
+            fileName: p.basename(finalPath),
+            success: true,
+            outputPath: finalPath,
+          );
+        } else {
+          // Clean up partial file.
+          try {
+            File(tempPath).deleteSync();
+          } catch (_) {}
+          showDialog(
+            context: context,
+            builder:
+                (ctx) => AlertDialog(
+                  icon: const Icon(Icons.error, color: Colors.red, size: 36),
+                  title: const Text('Merge Failed'),
+                  content: SizedBox(
+                    width: 500,
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        result.stderr.toString(),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      child: const Text('OK'),
+                    ),
+                  ],
+                ),
+          );
+          NotificationService.mergeComplete(
+            fileName: p.basename(finalPath),
+            success: false,
+          );
+        }
       }
-      _lastMergeSucceeded = result.exitCode == 0;
-    });
-    _notifyParent();
-
-    if (mounted && !_cancelRequested) {
-      if (result.exitCode == 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Merged successfully: ${p.basename(finalPath)}'),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Merge failed: ${result.stderr}'),
-            backgroundColor: Colors.red,
-          ),
-        );
+    } finally {
+      // Clean up temp file if it still exists (e.g. on cancel).
+      try {
+        if (File(tempPath).existsSync()) File(tempPath).deleteSync();
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _isMerging = false;
+          _activeProcess = null;
+        });
+        _notifyParent();
       }
     }
   }
@@ -399,6 +459,7 @@ class AudioMergerTabState extends State<AudioMergerTab>
                   Icon(Icons.merge_type, color: theme.colorScheme.primary),
                   const SizedBox(width: 8),
                   Text('Audio Merger', style: theme.textTheme.titleLarge),
+                  const SizedBox(width: 8),
                   const Spacer(),
                   const Text('Output: '),
                   const SizedBox(width: 8),
@@ -537,16 +598,22 @@ class AudioMergerTabState extends State<AudioMergerTab>
                         )
                         : ReorderableListView.builder(
                           itemCount: _files.length,
-                          onReorder: _onReorder,
+                          onReorder: _isMerging ? (_, __) {} : _onReorder,
                           buildDefaultDragHandles: false,
                           itemBuilder: (context, index) {
                             final file = _files[index];
                             return ListTile(
                               key: ValueKey(file.path),
-                              leading: ReorderableDragStartListener(
-                                index: index,
-                                child: const Icon(Icons.drag_handle),
-                              ),
+                              leading:
+                                  _isMerging
+                                      ? const Icon(
+                                        Icons.drag_handle,
+                                        color: Colors.grey,
+                                      )
+                                      : ReorderableDragStartListener(
+                                        index: index,
+                                        child: const Icon(Icons.drag_handle),
+                                      ),
                               title: Text(
                                 file.name,
                                 overflow: TextOverflow.ellipsis,
