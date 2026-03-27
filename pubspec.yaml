@@ -33,6 +33,7 @@ dependencies:
 
   yaru: ^1.2.2
   yaru_widgets: ^3.6.0
+  window_manager: ^0.4.3
   desktop_drop: ^0.4.4
   file_picker: ^10.3.10
   path: ^1.9.0

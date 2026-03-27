@@ -1,7 +1,5 @@
-import 'package:flutter/material.dart';
+import 'package:audiokit/app/audio_kit_app.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:audiokit/main.dart';
 
 void main() {
   testWidgets('AudioKit app renders', (WidgetTester tester) async {
