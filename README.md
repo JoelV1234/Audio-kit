@@ -1,89 +1,68 @@
-# AudioKit 🎵
+# AudioKit
 
-AudioKit is a high-performance Flutter Linux desktop application designed for batch **Video-to-Audio conversion** and **Audio Merging**. It features a modern Ubuntu-style UI (using Yaru) and provides real-time progress tracking and process management for all operations.
+A free and open-source desktop app for Linux to convert video files to audio and merge audio files, powered by ffmpeg and built with Flutter.
 
-![AudioKit Screenshot](assets/screenshots/app_screenshot.png)
+## Features
 
-## ✨ Features
+### Video to Audio
+- Convert MP4, MKV, AVI, MOV, WEBM, FLV and other video formats to audio
+- Output formats: MP3, Opus, HE-AAC
+- Choose bitrate per conversion
+- Add files via drag & drop, file picker, or direct media URLs
+- Per-file or batch conversion
+- Cancel individual files or all conversions
+- Real-time progress and ETA per file
 
-- **Video to Audio Conversion**: 
-    - Batch process multiple video files.
-    - Support for multiple output formats (Opus, MP3, HE-AAC).
-    - Real-time progress percentage and ETA display.
-    - Per-file cancellation and "Cancel All" functionality.
-- **Audio Merger**: 
-    - Merge multiple audio files into a single track.
-    - Drag-and-drop to reorder tracks.
-    - Progress tracking during standardization and concatenation phases.
-    - Merge cancellation support.
-- **Modern Linux UX**:
-    - Native Yaru theme integration.
-    - Drag-and-drop folder and file imports.
-    - Intelligent folder scanning with file type filtering.
-    - Clean, dark-mode optimized interface.
+### Audio Merger
+- Merge multiple audio files into a single output file
+- Supports MP3, Opus, OGG, M4A, AAC, WAV, FLAC, WMA, ALAC, AIFF, and more
+- Files are automatically sorted alphabetically when added
+- Drag to reorder before merging
+- Output formats: MP3, Opus, HE-AAC
+- Cancel mid-merge with option to keep or delete the partial file
+- Live process log viewer
 
-## 🛠️ Prerequisites
+## Requirements
 
-AudioKit requires **FFmpeg** to be installed on your system.
+- Linux (x86_64)
+- [ffmpeg](https://ffmpeg.org/) must be installed and on your `PATH`
 
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install ffmpeg
+# Ubuntu / Debian
+sudo apt install ffmpeg
 
 # Fedora
 sudo dnf install ffmpeg
 
-# Arch Linux
+# Arch
 sudo pacman -S ffmpeg
 ```
 
-## 📦 Download & Installation
+## Installation
 
-### Debian/Ubuntu (.deb)
-
-Download the [audiokit-1.0.0+1-linux.deb](dist/1.0.0+1/audiokit-1.0.0+1-linux.deb) directly and install it:
+Download the latest `.deb` from the [Releases](../../releases) page and install:
 
 ```bash
-# Install the package
 sudo dpkg -i audiokit-1.0.0+1-linux.deb
-
-# Fix missing dependencies (if any)
-sudo apt-get install -f
 ```
 
-## 🚀 Getting Started (Development)
+Or double-click the `.deb` file in your file manager.
 
-### Clone the repository
-```bash
-git clone git@github.com:JoelV1234/audio-kit.git
-cd audio-kit
-```
+## Building from Source
 
-### Run the application
+Requires [Flutter](https://flutter.dev) 3.29 or later.
+
 ```bash
+git clone https://github.com/JoelV1234/audiokit.git
+cd audiokit
 flutter pub get
-flutter run -d linux
-```
-
-### Build for Release
-```bash
 flutter build linux --release
 ```
 
-## 🏗️ Project Structure
+The built binary will be at `build/linux/x64/release/bundle/audiokit`.
 
-- `lib/services/`: Core FFmpeg process management and progress parsing.
-- `lib/widgets/`: Yaru-styled UI components and tab implementations.
-- `lib/models/`: Data models for media processing state.
+## License
 
-## 🧰 Tech Stack
+MIT License — see [LICENSE](LICENSE) for details.
 
-- **Framework**: [Flutter](https://flutter.dev) (Desktop)
-- **UI Architecture**: [Yaru](https://pub.dev/packages/yaru) (Ubuntu design system)
-- **Engine**: [FFmpeg](https://ffmpeg.org)
-- **Key Plugins**: `desktop_drop`, `file_picker`, `path_provider`, `window_manager`.
-
-## 📜 License
-
-This project is licensed under the [MIT License](LICENSE).
-
+Copyright (c) 2026 Joel Vaz
