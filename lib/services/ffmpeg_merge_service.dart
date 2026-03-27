@@ -13,6 +13,7 @@ class FfmpegMergeService {
     required List<String> inputPaths,
     required String outputPath,
     required AudioFormat format,
+    String? bitrate,
     void Function(Process)? onProcessStarted,
     void Function(double, String)? onProgress,
   }) async {
@@ -112,7 +113,7 @@ class FfmpegMergeService {
       '0',
       '-i',
       concatFile.path,
-      ...codecArgsForFormat(format),
+      ...codecArgsForFormat(format, bitrate: bitrate),
       '-f', ffmpegFormatName(format),
       outputPath,
     ];

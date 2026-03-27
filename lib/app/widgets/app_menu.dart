@@ -120,7 +120,7 @@ class AppMenu extends StatelessWidget {
                 children: [
                   Icon(Icons.info_outline),
                   SizedBox(width: 12),
-                  Text('About AudioKit'),
+                  Text('About Audio Kit'),
                 ],
               ),
             ),
@@ -131,7 +131,7 @@ class AppMenu extends StatelessWidget {
   void _showAboutDialog(BuildContext context) {
     showAboutDialog(
       context: context,
-      applicationName: 'AudioKit',
+      applicationName: 'Audio Kit',
       applicationVersion: '1.0.0',
       applicationIcon: const Icon(Icons.audiotrack, size: 48),
       children: [

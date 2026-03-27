@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:yaru_widgets/yaru_widgets.dart';
 
 import '../features/audio_merger/audio_merger_tab.dart';
 import '../features/video_to_audio/video_to_audio_tab.dart';
@@ -104,25 +105,41 @@ class _AudioKitHomeState extends State<AudioKitHome> with WindowListener {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          toolbarHeight: 80,
-          title: Column(
-            children: [
-              const SizedBox(height: 10),
-              TabBar(
-                tabs: [
-                  Tab(icon: _videoTabIcon(), text: 'Video to Audio'),
-                  Tab(icon: _mergerTabIcon(), text: 'Audio Merger'),
-                ],
-              ),
-            ],
+          toolbarHeight: 60,
+          automaticallyImplyLeading: false,
+          titleSpacing: 0,
+          title: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: AppMenu(
+                    currentThemeMode: widget.themeMode,
+                    onThemeModeChanged: widget.onThemeModeChanged,
+                  ),
+                ),
+                Expanded(
+                  child: Center(
+                    child: Container(
+                      width: 650,
+                      padding: EdgeInsets.only(right: 50),
+                      child: YaruTabBar(
+                        height: 50,
+                        tabs: [
+                          YaruTab(
+                            icon: _videoTabIcon(),
+                            label: 'Video to Audio',
+                          ),
+                          YaruTab(
+                            icon: _mergerTabIcon(),
+                            label: 'Audio Merger',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ]
           ),
-          actions: [
-            AppMenu(
-              currentThemeMode: widget.themeMode,
-              onThemeModeChanged: widget.onThemeModeChanged,
-            ),
-            const SizedBox(width: 15),
-          ],
         ),
         body: Column(
           children: [

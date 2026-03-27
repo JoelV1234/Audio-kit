@@ -23,16 +23,39 @@ const _defaultBitrates = {
 /// Shows a dialog for the user to pick an output format and bitrate.
 /// Returns [ConversionSettings] or null if the user cancelled.
 Future<ConversionSettings?> showConversionSettingsDialog(
-  BuildContext context,
-) {
+  BuildContext context, {
+  AudioFormat initialFormat = AudioFormat.mp3,
+  String? initialBitrate,
+  String title = 'Conversion Settings',
+  String confirmLabel = 'Convert',
+  IconData confirmIcon = Icons.transform,
+}) {
   return showDialog<ConversionSettings>(
     context: context,
-    builder: (ctx) => const _ConversionSettingsDialog(),
+    builder: (ctx) => _ConversionSettingsDialog(
+      initialFormat: initialFormat,
+      initialBitrate: initialBitrate,
+      title: title,
+      confirmLabel: confirmLabel,
+      confirmIcon: confirmIcon,
+    ),
   );
 }
 
 class _ConversionSettingsDialog extends StatefulWidget {
-  const _ConversionSettingsDialog();
+  final AudioFormat initialFormat;
+  final String? initialBitrate;
+  final String title;
+  final String confirmLabel;
+  final IconData confirmIcon;
+
+  const _ConversionSettingsDialog({
+    this.initialFormat = AudioFormat.mp3,
+    this.initialBitrate,
+    this.title = 'Conversion Settings',
+    this.confirmLabel = 'Convert',
+    this.confirmIcon = Icons.transform,
+  });
 
   @override
   State<_ConversionSettingsDialog> createState() =>
@@ -41,8 +64,8 @@ class _ConversionSettingsDialog extends StatefulWidget {
 
 class _ConversionSettingsDialogState
     extends State<_ConversionSettingsDialog> {
-  AudioFormat _format = AudioFormat.mp3;
-  String _bitrate = _defaultBitrates[AudioFormat.mp3]!;
+  late AudioFormat _format = widget.initialFormat;
+  late String _bitrate = widget.initialBitrate ?? _defaultBitrates[widget.initialFormat]!;
 
   void _onFormatChanged(AudioFormat format) {
     setState(() {
@@ -63,7 +86,7 @@ class _ConversionSettingsDialogState
         children: [
           Icon(Icons.tune, color: theme.colorScheme.primary),
           const SizedBox(width: 10),
-          const Text('Conversion Settings'),
+          Text(widget.title),
         ],
       ),
       content: SizedBox(
@@ -137,8 +160,8 @@ class _ConversionSettingsDialogState
             context,
             ConversionSettings(format: _format, bitrate: _bitrate),
           ),
-          icon: const Icon(Icons.transform),
-          label: const Text('Convert'),
+          icon: Icon(widget.confirmIcon),
+          label: Text(widget.confirmLabel),
         ),
       ],
     );

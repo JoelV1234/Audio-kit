@@ -65,6 +65,23 @@ extension _AudioMergerTabMerge on AudioMergerTabState {
       return;
     }
 
+    final settings = await showConversionSettingsDialog(
+      context,
+      initialFormat: _selectedFormat,
+      initialBitrate: _selectedBitrate,
+      title: 'Output Settings',
+      confirmLabel: 'Merge',
+      confirmIcon: Icons.call_merge,
+    );
+    if (settings == null) return;
+
+    _selectedFormat = settings.format;
+    _selectedBitrate = settings.bitrate;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('merger_format', settings.format.name);
+    await prefs.setString('merger_bitrate', settings.bitrate);
+
     final ext = extensionForFormat(_selectedFormat);
     final outputPath = await LinuxFileDialogService.pickSavePath(
       title: 'Save merged audio as',
@@ -94,6 +111,7 @@ extension _AudioMergerTabMerge on AudioMergerTabState {
         inputPaths: _files.map((f) => f.path).toList(),
         outputPath: tempPath,
         format: _selectedFormat,
+        bitrate: _selectedBitrate,
         onProcessStarted: (process) {
           if (!mounted) return;
           _setState(() => _activeProcess = process);

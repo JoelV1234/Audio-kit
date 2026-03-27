@@ -69,31 +69,13 @@ extension _AudioMergerTabView on AudioMergerTabState {
                     icon: const Icon(Icons.clear_all),
                     label: const Text('Clear'),
                   ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.terminal),
-                    tooltip: 'Show process log',
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
                     onPressed: () => showTerminalLogDialog(context),
+                    icon: const Icon(Icons.terminal),
+                    label: const Text('Logs'),
                   ),
-                  const SizedBox(width: 4),
-                  const Text('Output: '),
-                  const SizedBox(width: 8),
-                  DropdownButton<AudioFormat>(
-                    value: _selectedFormat,
-                    onChanged:
-                        _isMerging
-                            ? null
-                            : (v) => _setState(() => _selectedFormat = v!),
-                    items:
-                        AudioFormat.values
-                            .map(
-                              (f) => DropdownMenuItem(
-                                value: f,
-                                child: Text(labelForFormat(f)),
-                              ),
-                            )
-                            .toList(),
-                  ),
+                  const Spacer(),
                   if (_files.isNotEmpty) ...[
                     const SizedBox(width: 12),
                     Text(
